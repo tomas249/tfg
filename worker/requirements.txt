@@ -1,0 +1,9 @@
+flask_sqlalchemy
+psycopg2-binary
+shortuuid
+pika
+pandas
+numpy
+torch
+torch-geometric
+scikit-learn
