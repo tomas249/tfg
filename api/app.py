@@ -1,8 +1,9 @@
 import json
 import os
-
 import pika
 import shortuuid
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from flask import Flask, abort, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
@@ -13,6 +14,34 @@ POSTGRES_PW = os.getenv('POSTGRES_PW', 'password')
 POSTGRES_DB = os.getenv('POSTGRES_DB', 'mydb')
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
 POSTGRES_URL = f'postgresql://{POSTGRES_USER}:{POSTGRES_PW}@{POSTGRES_HOST}/{POSTGRES_DB}'
+
+def create_database_if_not_exists():
+    try:
+        conn = psycopg2.connect(
+            host=POSTGRES_HOST,
+            user=POSTGRES_USER,
+            password=POSTGRES_PW,
+            database='postgres'
+        )
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (POSTGRES_DB,))
+        exists = cursor.fetchone()
+        
+        if not exists:
+            cursor.execute(f'CREATE DATABASE "{POSTGRES_DB}"')
+            print(f"Database '{POSTGRES_DB}' created successfully")
+        else:
+            print(f"Database '{POSTGRES_DB}' already exists")
+            
+        cursor.close()
+        conn.close()
+        
+    except psycopg2.Error as e:
+        print(f"Error creating database: {e}")
+        raise
+create_database_if_not_exists()
 
 # INIT - This is crucial!
 app = Flask(__name__)
@@ -49,7 +78,6 @@ def create_tables():
 create_tables()
 
 # ENDPOINTS
-
 # POST /sessions
 @app.route('/sessions', methods=['POST'])
 def create_session():
@@ -65,6 +93,7 @@ def get_predictions(sessionToken):
     session = Session.query.filter_by(token=sessionToken).first()
     if not session:
         abort(404, 'Session not found')
+    
     predictions = Prediction.query.filter_by(sessionId=session.id).order_by(Prediction.id.desc()).all()
     return jsonify([
         {
@@ -81,16 +110,19 @@ def create_predictions():
     data = request.get_json()
     token = data.get('token')
     inputs = data.get('inputs', [])
+    
     session = Session.query.filter_by(token=token).first()
     if not session:
         abort(404, 'Session not found')
+    
     predictions = []
     for inp in inputs:
         prediction = Prediction(sessionId=session.id, input=inp, predicted=False)
         db.session.add(prediction)
         predictions.append(prediction)
+    
     db.session.commit()
-
+    
     # Publish to RabbitMQ
     try:
         conn = get_rabbitmq_connection()
@@ -107,7 +139,7 @@ def create_predictions():
         print(f"RabbitMQ error: {e}")
         # Consider returning an error response or retrying
         return jsonify({'error': 'Failed to queue predictions'}), 500
-
+    
     return jsonify({'inserted': len(predictions)})
 
 if __name__ == '__main__':
